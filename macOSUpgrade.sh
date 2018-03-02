@@ -51,9 +51,43 @@
 #
 # Created On: January 5th, 2017
 # Updated On: January 30th, 2018
-# Modified for KISD by Mike Donovan February 5, 2018
+# Modified for KISD by Mike Donovan March 1, 2018
 #
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+unattendedInstall(){
+
+jamf policy -event installLoginLog
+
+	/bin/cat <<EOF > /Library/LaunchAgents/se.gu.it.LoginLog.plist
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>se.gu.it.LoginLog</string>
+  <key>LimitLoadToSessionType</key>
+  <array>
+    <string>LoginWindow</string>
+  </array>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Library/PrivilegedHelperTools/LoginLog.app/Contents/MacOS/LoginLog</string>
+    <string>-logfile</string>
+    <string>"/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
+EOF
+
+/usr/sbin/chown root:wheel /Library/LaunchAgents/se.gu.it.LoginLog.plist
+/bin/chmod 644 /Library/LaunchAgents/se.gu.it.LoginLog.plist
+
+launchctl load -S LoginWindow /Library/LaunchAgents/se.gu.it.LoginLog.plist
+
+}
 
 ## Run jamf manage to ensure the device is removed from any software restrictions
 jamf manage
@@ -74,20 +108,21 @@ userDialog=0
 
 #Specify path to OS installer. Use Parameter 4 in the JSS, or specify here
 #Example: /Applications/Install macOS High Sierra.app
-OSInstaller="/Applications/Install macOS High Sierra.app"
+OSInstaller="$4"
 
 ##Version of OS. Use Parameter 5 in the JSS, or specify here.
 #Example: 10.12.5
-version="10.13.3"
+version="$5"
 
 #Trigger used for download. Use Parameter 6 in the JSS, or specify here.
 #This should match a custom trigger for a policy that contains an installer
 #Example: download-sierra-install
-download_trigger="downloadHighSierra"
+download_trigger="$6"
 
 #Title of OS
 #Example: macOS High Sierra
-macOSname=$(echo "$OSInstaller" |sed 's/^\/Applications\/Install \(.*\)\.app$/\1/')
+#macOSname=$(echo "$OSInstaller" |sed 's/^\/Applications\/Install \(.*\)\.app$/\1/')
+macOSname="$7"
 
 ##Title to be used for userDialog (only applies to Utility Window)
 title="$macOSname Upgrade"
@@ -106,44 +141,56 @@ take several minutes."
 
 ##Icon to be used for userDialog
 ##Default is macOS Installer logo which is included in the staged installer package
-icon="$OSInstaller/Contents/Resources/InstallAssistant.icns"
+#icon="$OSInstaller/Contents/Resources/InstallAssistant.icns"
+icon="/Library/Application Support/JAMF/bin/KISDColorsealWithBG.png"
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # SYSTEM CHECKS
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+
+echo "[$(date)]" > "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
 
 ##Get Current User
 currentUser=$( stat -f %Su /dev/console )
 
 if [[ ${currentUser} == "root" ]]; then
     userDialog=2
+		echo "[$(date +%H:%M:%S)]Current User is root begin unattended upgrade" >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
+		echo "This process should take approx 20mins before the computer restarts." >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
+		echo "If the computer has not restarted in 30mins use CMD+Q to quit this screen and restart manually." >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
+else
+		echo "[$(date +%H:%M:%S)]Current User ${currentUser}" >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
 fi
 
-echo "Current User ${currentUser}" > "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
 #Check if ethernet is Active
 wiredactive="NO"
 
-wiredservices=$(networksetup -listnetworkserviceorder | grep 'Hardware Port' | grep 'Ethernet')
+wiredservices=$(networksetup -listnetworkserviceorder | grep 'Hardware Port' | grep -e 'Ethernet' -e 'USB-C LAN')
 
 while read line; do
-    sname=$(echo $line | awk -F  "(, )|(: )|[)]" '{print $2}')
     sdev=$(echo $line | awk -F  "(, )|(: )|[)]" '{print $4}')
-	checkActive=$(ifconfig $sdev 2>/dev/null | grep status | cut -d ":" -f2)
-	if [ "$checkActive" == " active" ]; then
-		wiredactive="YES"
-	fi
+		checkActive=$(ifconfig $sdev 2>/dev/null | grep status | cut -d ":" -f2)
+		if [ "$checkActive" == " active" ]; then
+			wiredactive="YES"
+		fi
 done <<< "$(echo "$wiredservices")"
 
-echo "Wired Active ${wiredactive}" >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
+if [[ ${wiredactive} == "YES" ]]; then
+    netStatus="OK"
+    /bin/echo "[$(date +%H:%M:%S)]Network Check: OK - Ethernet Detected" >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
+else
+    netStatus="ERROR"
+    /bin/echo "[$(date +%H:%M:%S)]Network Check: ERROR - No Ethernet Detected" >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
+fi
 
 ##Check if device is on battery or ac power
 pwrAdapter=$( /usr/bin/pmset -g ps )
 if [[ ${pwrAdapter} == *"AC Power"* ]]; then
     pwrStatus="OK"
-    /bin/echo "Power Check: OK - AC Power Detected" >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
+    /bin/echo "[$(date +%H:%M:%S)]Power Check: OK - AC Power Detected" >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
 else
     pwrStatus="ERROR"
-    /bin/echo "Power Check: ERROR - No AC Power Detected" >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
+    /bin/echo "[$(date +%H:%M:%S)]Power Check: ERROR - No AC Power Detected" >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
 fi
 
 ##Check if free space > 15GB
@@ -156,10 +203,10 @@ fi
 
 if [[ ${freeSpace%.*} -ge 15000000000 ]]; then
     spaceStatus="OK"
-    /bin/echo "Disk Check: OK - ${freeSpace%.*} Bytes Free Space Detected" >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
+    /bin/echo "[$(date +%H:%M:%S)]Disk Check: OK - ${freeSpace%.*} Bytes Free Space Detected" >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
 else
     spaceStatus="ERROR"
-    /bin/echo "Disk Check: ERROR - ${freeSpace%.*} Bytes Free Space Detected" >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
+    /bin/echo "[$(date +%H:%M:%S)]Disk Check: ERROR - ${freeSpace%.*} Bytes Free Space Detected" >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
 fi
 
 ##Check for existing OS installer
@@ -172,7 +219,7 @@ if [ -e "$OSInstaller" ]; then
   else
     downloadOS="Yes"
     ##Delete old version.
-    /bin/echo "Installer found, but old. Deleting..." >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
+    /bin/echo "[$(date +%H:%M:%S)]Installer found, but old. Deleting..." >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
     /bin/rm -rf "$OSInstaller"
   fi
 else
@@ -183,13 +230,25 @@ fi
 if [ $downloadOS = "Yes" ]; then
   if [[ ${userDialog} != 2 ]]; then
       /Library/Application\ Support/JAMF/bin/jamfHelper.app/Contents/MacOS/jamfHelper \
-      -windowType utility -title "$title"  -alignHeading center -alignDescription left -description "$dldescription" \
-      -button1 Ok -defaultButton 1 -icon "/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/SidebarDownloadsFolder.icns" -iconSize 100
+      -windowType fs -title "" -heading "$title" -description "$dldescription" \
+      -icon "$icon" -iconSize 100 &
+      jamfHelperPID=$(echo $!)
+	else
+		unattendedInstall
   fi
   ##Run policy to cache installer
+  /bin/echo "[$(date +%H:%M:%S)]Downloading Installer..." >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
   /usr/local/jamf/bin/jamf policy -event $download_trigger
+  if [[ ${userDialog} != 2 ]]; then
+		kill ${jamfHelperPID}
+	fi
+
 else
-  /bin/echo "$macOSname installer with $version was already present, continuing..." >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
+	/bin/echo "$macOSname installer with $version was already present, continuing..." >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
+	if [[ ${userDialog} == 2 ]]; then
+		unattendedInstall
+		/bin/echo "[$(date +%H:%M:%S)]Installer Present continuing..." >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
+	fi
 fi
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
@@ -205,6 +264,7 @@ fi
 /bin/sleep 2
 ## Update Device Inventory
 /usr/local/jamf/bin/jamf recon
+touch /var/db/.AppleSetupDone
 ## Remove LaunchDaemon
 /bin/rm -f /Library/LaunchDaemons/com.jamfps.cleanupOSInstall.plist
 ## Remove Script
@@ -290,30 +350,35 @@ EOP
 /usr/bin/caffeinate -dis &
 caffeinatePID=$(echo $!)
 
-if [[ ${pwrStatus} == "OK" ]] && [[ ${spaceStatus} == "OK" ]] && [[ ${wiredactive} == "YES" ]]; then
+if [[ ${pwrStatus} == "OK" ]] && [[ ${spaceStatus} == "OK" ]] && [[ ${netStatus} == "OK" ]]; then
     ##Launch jamfHelper
     if [[ ${userDialog} == 0 ]]; then
-        /bin/echo "Launching jamfHelper as FullScreen..." >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
+        /bin/echo "[$(date +%H:%M:%S)]Launching jamfHelper as FullScreen..." >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
         /Library/Application\ Support/JAMF/bin/jamfHelper.app/Contents/MacOS/jamfHelper -windowType fs -title "" -icon "$icon" -heading "$heading" -description "$description" &
         jamfHelperPID=$(echo $!)
     fi
     if [[ ${userDialog} == 1 ]]; then
-        /bin/echo "Launching jamfHelper as Utility Window..." >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
+        /bin/echo "[$(date +%H:%M:%S)]Launching jamfHelper as Utility Window..." >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
         /Library/Application\ Support/JAMF/bin/jamfHelper.app/Contents/MacOS/jamfHelper -windowType utility -title "$title" -icon "$icon" -heading "$heading" -description "$description" -iconSize 100 &
         jamfHelperPID=$(echo $!)
     fi
-    ##Load LaunchAgent
-    if [[ ${currentUser} != "root" ]]; then
-        userID=$( id -u ${currentUser} )
-        launchctl bootstrap gui/${userID} /Library/LaunchAgents/com.apple.install.osinstallersetupd.plist
-    fi
-    ##Begin Upgrade
-    /bin/echo "Launching startosinstall..." >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
+
     if [[ ${userDialog} == 2 ]]; then
-        "$OSInstaller/Contents/Resources/startosinstall" --applicationpath "$OSInstaller" --nointeraction &
-    else
-        "$OSInstaller/Contents/Resources/startosinstall" --applicationpath "$OSInstaller" --nointeraction --pidtosignal $jamfHelperPID &
-    fi
+			##Unattended unLoad LaunchAgent
+			launchctl unload /Library/LaunchAgents/se.gu.it.LoginLog.plist
+			rm -f /Library/LaunchAgents/se.gu.it.LoginLog.plist
+			/bin/echo "[$(date +%H:%M:%S)]Unloading Unattended LaunchAgent..." >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
+		fi
+
+		if [[ ${userDialog} == 0 ]] || [[ ${userDialog} == 1 ]]; then
+			## Attended Begin Upgrade
+			/bin/echo "[$(date +%H:%M:%S)]Launching Attended startosinstall..." >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
+			"$OSInstaller/Contents/Resources/startosinstall" --applicationpath "$OSInstaller" --nointeraction --pidtosignal $jamfHelperPID >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log" &
+	  else
+			##Unattended Begin Upgrade
+			/bin/echo "[$(date +%H:%M:%S)]Launching Unattended startosinstall..." >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
+			"$OSInstaller/Contents/Resources/startosinstall" --applicationpath "$OSInstaller" --nointeraction >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log" &
+		fi
     /bin/sleep 3
 else
     ## Remove Script
@@ -321,11 +386,12 @@ else
     /bin/rm -f /Library/LaunchDaemons/com.jamfps.cleanupOSInstall.plist
     /bin/rm -f /Library/LaunchAgents/com.apple.install.osinstallersetupd.plist
 
-    if [[ ${userDialog} != 2 ]]; then
-      /bin/echo "Launching jamfHelper Dialog (Requirements Not Met)..." >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
-      /Library/Application\ Support/JAMF/bin/jamfHelper.app/Contents/MacOS/jamfHelper -windowType utility -title "$title" -icon "$icon" -heading "Requirements Not Met" -description "We were unable to prepare your computer for $macOSname. Please ensure you are connected to power, ethernet and that you have at least 15GB of Free Space.
+		/bin/echo "[$(date +%H:%M:%S)]Launching jamfHelper Dialog (Requirements Not Met)..." >> "/Library/Application Support/JAMF/bin/macOSinPlaceUpgrade.log"
 
-      If you continue to experience this issue, please contact the IT Support Center." -iconSize 100 -button1 "OK" -defaultButton 1
+    if [[ ${userDialog} != 2 ]]; then
+      /Library/Application\ Support/JAMF/bin/jamfHelper.app/Contents/MacOS/jamfHelper -windowType utility -title "$title" -icon "$icon" -heading "Requirements Not Met" -description "We were unable to prepare your computer for $macOSname. Please ensure you are connected to both power and ethernet and that you have at least 15GB of Free Space.
+
+      If you continue to experience this issue, please contact your CTSS." -iconSize 100 -button1 "OK" -defaultButton 1
     fi
 fi
 
